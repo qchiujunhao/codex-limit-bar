@@ -1,0 +1,10 @@
+.DS_Store
+.build/
+build/
+dist/
+CodexLimitBar.app/
+*.zip
+*.xcuserstate
+menu-bar-test.png
+popover-*.png
+*-regression.png
