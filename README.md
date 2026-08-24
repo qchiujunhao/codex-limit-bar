@@ -1,82 +1,80 @@
 # Codex Limit Bar
 
+[简体中文](README.zh-CN.md)
+
 An unofficial native macOS menu bar app for checking Codex 5-hour and weekly usage limits at a glance.
 
-Codex Limit Bar 在菜单栏显示真实剩余额度。点击状态项后，可以查看各额度窗口、重置时间、当前套餐和可用重置次数。
+English is the default interface language. Open the popover and use the language menu to switch the entire interface to Simplified Chinese; the choice is saved locally.
 
-The interface supports English and Simplified Chinese. English is the default; the language menu in the popover switches the entire interface immediately and remembers your choice.
+## Display format
 
-## 显示规则
+The menu bar shows Codex's 5-hour and weekly limits:
 
-菜单栏分别显示 Codex 的 **5 小时额度**与**每周额度**：
+- When both windows are available: `5h 80%  Wk 43%`
+- When the 5-hour window is temporarily unavailable: `Wk 43%`
+- When the 5-hour window returns, it appears again on the next refresh.
 
-- 两个窗口都返回时：`5h 80%  周 43%`
-- 接口暂时没有返回 5 小时窗口时：只显示 `周 43%`
-- 5 小时窗口恢复后会在下一次刷新时自动出现
+## Features
 
-默认英文界面对应显示为 `5h 80%  Wk 43%`；缺少 5 小时窗口时只显示 `Wk 43%`。
+- Shows remaining Codex limits and color-coded progress bars in the macOS menu bar
+- Displays the 5-hour and weekly limits separately
+- Hides the 5-hour item when Codex does not return that window
+- Switches between English and Simplified Chinese instantly, with English as the default
+- Shows reset times, plan information, and available reset credits
+- Refreshes automatically every 60 seconds and supports manual refresh
+- Retries automatically after connection failures or timeouts
+- Keeps the last successful values and shows `!` when they are stale
+- Does not read, copy, or save ChatGPT login tokens
+- Native AppKit app for Apple Silicon and Intel Macs
 
-## 功能
+## Requirements
 
-- 在 macOS 菜单栏显示 Codex 剩余额度及颜色进度条
-- 分别显示 5 小时额度和每周额度
-- 5 小时额度未返回时自动隐藏该项
-- English / 简体中文即时切换，默认英文并记住选择
-- 查看各额度窗口、重置时间、套餐及可用重置次数
-- 每 60 秒自动刷新，并支持手动刷新
-- 连接中断或超时后自动重试
-- 数据过期时保留上次结果并显示 `!`
-- 不读取、复制或保存 ChatGPT 登录令牌
-- 原生 AppKit 应用，支持 Apple Silicon 与 Intel Mac
+- macOS 13 or later
+- ChatGPT/Codex desktop app or Codex CLI installed and signed in
 
-## 系统要求
+## Download and install
 
-- macOS 13 或更高版本
-- 已安装并登录 ChatGPT/Codex 桌面 App，或已安装并登录 Codex CLI
+Download `Codex-Limit-Bar.zip` from the repository's [Releases](../../releases) page, unzip it, and run `Codex Limit Bar.app`.
 
-## 下载与安装
+The current build uses ad-hoc signing and is not notarized. If macOS blocks the first launch, right-click the app in Finder and choose **Open**.
 
-从仓库的 [Releases](../../releases) 下载 `Codex-Limit-Bar.zip`，解压后运行 `Codex Limit Bar.app`。
+The app has no Dock icon. Click the menu bar item, then choose **Quit** to exit. The language menu is at the bottom of the same popover.
 
-当前构建使用 ad-hoc 签名且未公证。如果 macOS 首次启动时拦截，可在 Finder 中右键应用并选择“打开”。
+## Data source and privacy
 
-应用没有 Dock 图标。点击菜单栏额度条，再点 `Quit` / `退出` 即可关闭。语言可在同一面板底部切换。
+The app reads limit information through the official local Codex App Server `account/rateLimits/read` method. `usedPercent`, window durations, and reset times come from that response. Authentication is handled by the local ChatGPT/Codex sign-in state.
 
-## 数据来源与隐私
+The app does not independently read, copy, or save login tokens, and it does not send limit data to third-party services. See the [OpenAI Codex App Server documentation](https://learn.chatgpt.com/docs/app-server#6-rate-limits-chatgpt).
 
-应用通过本机 Codex App Server 的官方 `account/rateLimits/read` 方法读取额度信息；`usedPercent`、额度窗口长度与重置时间都来自该接口。认证由本机 ChatGPT/Codex 登录状态处理。
+The language choice is stored locally in `UserDefaults`.
 
-应用不会自行读取、复制或保存登录令牌，也不会把额度数据发送到第三方服务。参见 [OpenAI Codex App Server 文档](https://learn.chatgpt.com/docs/app-server#6-rate-limits-chatgpt)。
+## Build from source
 
-语言选择仅保存在本机 `UserDefaults` 中。
-
-## 从源码构建
-
-需要安装 Xcode 或 Xcode Command Line Tools。
+Install Xcode or the Xcode Command Line Tools, then run:
 
 ```bash
 ./scripts/test.sh
 ./scripts/build.sh
 ```
 
-构建结果：
+Build artifacts:
 
 - `dist/Codex Limit Bar.app`
 - `dist/Codex-Limit-Bar.zip`
 
-构建脚本会生成支持 `arm64` 与 `x86_64` 的 Universal Binary，最低部署目标为 macOS 13。
+The build script creates a Universal Binary for `arm64` and `x86_64`, with macOS 13 as the minimum deployment target.
 
-## macOS 菜单栏限制
+## macOS menu bar limitation
 
-macOS 将左侧应用菜单与右侧状态区分开管理。独立应用只能创建右侧状态项，不能固定插入当前 App 的 `Help` 菜单后面。可按住 Command 拖动额度条，在右侧状态项之间调整顺序。
+macOS manages the app menu on the left and the status area on the right separately. An independent app can only create a status item in the right-side area; it cannot be pinned next to the current app's **Help** menu. Hold Command and drag the status item to adjust its position among the other status items.
 
-## 故障排除
+## Troubleshooting
 
-- 显示 `?%`：尚未成功读取数据。确认 ChatGPT/Codex 已登录，然后打开面板点“刷新”。
-- 显示 `!`：当前显示的是上次成功读取的旧值，应用正在自动重连。
-- 找不到状态项：菜单栏空间不足时 macOS 可能临时隐藏部分状态项。
-- API Key 登录：ChatGPT 套餐额度需要使用 ChatGPT 登录模式，API Key 模式没有对应的套餐额度窗口。
+- `?%`: The app has not read data successfully yet. Confirm that ChatGPT/Codex is signed in, then open the popover and click **Refresh**.
+- `!`: The app is showing the last successful values while reconnecting.
+- Missing status item: macOS may temporarily hide status items when the menu bar is full.
+- API key sign-in: ChatGPT plan limits require ChatGPT sign-in; API key mode does not provide those plan-limit windows.
 
-## 声明
+## Disclaimer
 
 This is an unofficial community project and is not affiliated with or endorsed by OpenAI. Codex, ChatGPT, and OpenAI are trademarks of OpenAI.
