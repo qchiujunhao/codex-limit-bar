@@ -151,7 +151,7 @@ final class CodexRateLimitClient {
                     "clientInfo": [
                         "name": "codex_limit_bar",
                         "title": "Codex Limit Bar",
-                        "version": "1.0.0"
+                        "version": "1.0.1"
                     ]
                 ]
             ]) else {
