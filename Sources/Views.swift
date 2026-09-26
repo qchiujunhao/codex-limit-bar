@@ -265,6 +265,11 @@ final class LimitPopoverController: NSViewController {
         renderCurrentState()
     }
 
+    func clearSnapshot() {
+        latestSnapshot = nil
+        updateStatus(.connecting)
+    }
+
     func updateStatus(_ status: ClientStatus) {
         activeStatus = status
         activeIssue = nil
@@ -321,8 +326,8 @@ final class LimitPopoverController: NSViewController {
         if let issue = activeIssue {
             if latestSnapshot == nil {
                 summaryLabel.stringValue = Text.temporarilyUnavailable(language)
-                contextLabel.stringValue = Text.issue(issue, language: language)
             }
+            contextLabel.stringValue = Text.issue(issue, language: language)
             footerLabel.stringValue = Text.connectionIssueFooter(language)
             refreshButton.isEnabled = true
         } else if let status = activeStatus {

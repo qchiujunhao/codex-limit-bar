@@ -18,3 +18,18 @@ xcrun swiftc \
   -o "${TEST_BUILD_DIRECTORY}/ModelTests"
 
 "${TEST_BUILD_DIRECTORY}/ModelTests"
+
+xcrun swiftc \
+  -swift-version 5 \
+  -warnings-as-errors \
+  -module-cache-path "${MODULE_CACHE_DIRECTORY}" \
+  -framework AppKit \
+  "${PROJECT_DIRECTORY}/Sources/Localization.swift" \
+  "${PROJECT_DIRECTORY}/Sources/Models.swift" \
+  "${PROJECT_DIRECTORY}/Sources/CodexRateLimitClient.swift" \
+  "${PROJECT_DIRECTORY}/Sources/Views.swift" \
+  "${PROJECT_DIRECTORY}/Tests/ClientTests.swift" \
+  -o "${TEST_BUILD_DIRECTORY}/ClientTests"
+
+cd "${PROJECT_DIRECTORY}"
+"${TEST_BUILD_DIRECTORY}/ClientTests"

@@ -4,8 +4,12 @@ final class CodexRateLimitClient {
     var onSnapshot: ((RateLimitSnapshot) -> Void)?
     var onStatus: ((ClientStatus) -> Void)?
     var onError: ((ClientIssue) -> Void)?
+    var onSnapshotInvalidated: (() -> Void)?
 
     private let queue = DispatchQueue(label: "app.codexlimitbar.client")
+    private let executablePath: String?
+    private let refreshInterval: TimeInterval
+    private let reconnectDelay: TimeInterval
     private var process: Process?
     private var inputPipe: Pipe?
     private var outputPipe: Pipe?
@@ -14,49 +18,67 @@ final class CodexRateLimitClient {
     private var refreshTimer: DispatchSourceTimer?
     private var reconnectWorkItem: DispatchWorkItem?
     private var initializeTimeoutWorkItem: DispatchWorkItem?
-    private var rateLimitTimeoutWorkItems: [Int: DispatchWorkItem] = [:]
+    private var requestTimeoutWorkItems: [Int: DispatchWorkItem] = [:]
     private var initialized = false
-    private var stopped = false
+    private var stopped = true
+    private var retriedThisRefresh = false
+    private var accountVerified = false
+    private var accountIdentity: Data?
+    private var pendingAccountRequestID: Int?
     private var processGeneration = 0
     private var nextRequestID = 10
     private var pendingRateLimitRequestIDs = Set<Int>()
+
+    init(executablePath: String? = nil, refreshInterval: TimeInterval = 60, reconnectDelay: TimeInterval = 5) {
+        self.executablePath = executablePath
+        self.refreshInterval = refreshInterval
+        self.reconnectDelay = reconnectDelay
+    }
 
     func start() {
         queue.async { [weak self] in
             guard let self else { return }
             self.stopped = false
-            self.startProcessIfNeeded()
+            self.startRefreshTimer()
+            self.refreshConnection()
         }
     }
 
     func refresh() {
         queue.async { [weak self] in
-            guard let self else { return }
-            if self.process?.isRunning == true, self.initialized {
-                self.requestRateLimits()
-            } else {
-                self.startProcessIfNeeded()
-            }
+            self?.refreshConnection()
         }
     }
 
     func stop() {
         queue.sync {
             stopped = true
+            refreshTimer?.cancel()
+            refreshTimer = nil
             reconnectWorkItem?.cancel()
             reconnectWorkItem = nil
             invalidateCurrentProcess(terminate: true)
         }
     }
 
+    private func refreshConnection() {
+        guard !stopped else { return }
+        retriedThisRefresh = false
+        // A desktop account switch need not notify this independent server.
+        // Restart on each refresh so Codex reloads its own file/keychain credentials.
+        // ponytail: one launch per refresh; reuse needs reliable cross-process account-change detection.
+        invalidateCurrentProcess(terminate: true)
+        startProcessIfNeeded()
+    }
+
     private func startProcessIfNeeded() {
-        guard process?.isRunning != true else { return }
+        guard !stopped, process?.isRunning != true else { return }
 
         if process != nil {
             invalidateCurrentProcess(terminate: false)
         }
 
-        guard let executablePath = Self.findCodexExecutable() else {
+        guard let executablePath = executablePath ?? Self.findCodexExecutable() else {
             reportError(.codexNotFound)
             return
         }
@@ -138,8 +160,7 @@ final class CodexRateLimitClient {
             }
             scheduleInitializeTimeout(generation: generation)
         } catch {
-            invalidateCurrentProcess(terminate: false)
-            reportError(.launchFailed(error.localizedDescription))
+            resetConnection(.launchFailed(error.localizedDescription))
         }
     }
 
@@ -170,8 +191,12 @@ final class CodexRateLimitClient {
                     resetConnection(Self.classifyIssue(from: errorMessage))
                 } else if pendingRateLimitRequestIDs.contains(requestID) {
                     pendingRateLimitRequestIDs.remove(requestID)
-                    rateLimitTimeoutWorkItems.removeValue(forKey: requestID)?.cancel()
-                    reportError(Self.classifyIssue(from: errorMessage))
+                    requestTimeoutWorkItems.removeValue(forKey: requestID)?.cancel()
+                    handleRequestIssue(Self.classifyIssue(from: errorMessage))
+                } else if requestID == pendingAccountRequestID {
+                    pendingAccountRequestID = nil
+                    requestTimeoutWorkItems.removeValue(forKey: requestID)?.cancel()
+                    handleRequestIssue(Self.classifyIssue(from: errorMessage))
                 }
                 return
             }
@@ -184,13 +209,48 @@ final class CodexRateLimitClient {
                     resetConnection(.initializationHandshakeFailed)
                     return
                 }
+                requestAccount()
+                return
+            }
+
+            if requestID == pendingAccountRequestID {
+                pendingAccountRequestID = nil
+                requestTimeoutWorkItems.removeValue(forKey: requestID)?.cancel()
+                guard let result = message["result"] as? [String: Any] else {
+                    invalidateSnapshot()
+                    reportError(.missingResponseData)
+                    return
+                }
+                guard let account = result["account"] as? [String: Any] else {
+                    handleRequestIssue(.loginRequired)
+                    return
+                }
+                guard account["type"] as? String == "chatgpt" else {
+                    invalidateSnapshot()
+                    reportError(account["type"] as? String == "apiKey" ? .apiKeyUnsupported : .noQuotaWindows)
+                    return
+                }
+
+                // Keep account metadata only in memory, never tokens. If the server
+                // cannot identify the account, do not reuse an earlier snapshot.
+                var identity: Data?
+                if let email = account["email"] as? String, !email.isEmpty {
+                    identity = try? JSONSerialization.data(withJSONObject: [
+                        "account": account,
+                        "workspaceRouting": result["workspaceRouting"] ?? NSNull()
+                    ], options: .sortedKeys)
+                }
+                if identity == nil || identity != accountIdentity {
+                    invalidateSnapshot()
+                    accountIdentity = identity
+                }
+                accountVerified = true
                 requestRateLimits()
-                startRefreshTimer()
                 return
             }
 
             if pendingRateLimitRequestIDs.remove(requestID) != nil {
-                rateLimitTimeoutWorkItems.removeValue(forKey: requestID)?.cancel()
+                requestTimeoutWorkItems.removeValue(forKey: requestID)?.cancel()
                 do {
                     let snapshot = try RateLimitSnapshot.parse(from: message)
                     DispatchQueue.main.async { [weak self] in
@@ -210,16 +270,33 @@ final class CodexRateLimitClient {
             return
         }
 
-        if let method = message["method"] as? String,
-           method == "account/rateLimits/updated" {
+        guard let method = message["method"] as? String else { return }
+        if method == "account/updated" {
+            cancelPendingRequests()
+            invalidateSnapshot()
+            requestAccount()
+        } else if method == "account/rateLimits/updated" {
             // Update notifications can be sparse. Re-read the full snapshot instead of
             // accidentally treating omitted windows or metadata as deleted.
             requestRateLimits()
         }
     }
 
+    private func requestAccount() {
+        guard initialized, pendingAccountRequestID == nil else { return }
+        let requestID = nextRequestID
+        nextRequestID += 1
+        pendingAccountRequestID = requestID
+        guard send(["method": "account/read", "id": requestID, "params": ["refreshToken": false]]) else {
+            resetConnection(.rateLimitRequestFailed)
+            return
+        }
+        scheduleRequestTimeout(requestID: requestID, generation: processGeneration)
+    }
+
     private func requestRateLimits() {
-        guard initialized, pendingRateLimitRequestIDs.isEmpty else { return }
+        guard initialized, accountVerified, pendingAccountRequestID == nil,
+              pendingRateLimitRequestIDs.isEmpty else { return }
         let requestID = nextRequestID
         nextRequestID += 1
         pendingRateLimitRequestIDs.insert(requestID)
@@ -229,15 +306,15 @@ final class CodexRateLimitClient {
             resetConnection(.rateLimitRequestFailed)
             return
         }
-        scheduleRateLimitTimeout(requestID: requestID, generation: processGeneration)
+        scheduleRequestTimeout(requestID: requestID, generation: processGeneration)
     }
 
     private func startRefreshTimer() {
         refreshTimer?.cancel()
         let timer = DispatchSource.makeTimerSource(queue: queue)
-        timer.schedule(deadline: .now() + 60, repeating: 60, leeway: .seconds(5))
+        timer.schedule(deadline: .now() + refreshInterval, repeating: refreshInterval)
         timer.setEventHandler { [weak self] in
-            self?.requestRateLimits()
+            self?.refreshConnection()
         }
         refreshTimer = timer
         timer.resume()
@@ -275,14 +352,14 @@ final class CodexRateLimitClient {
         queue.asyncAfter(deadline: .now() + 12, execute: workItem)
     }
 
-    private func scheduleRateLimitTimeout(requestID: Int, generation: Int) {
+    private func scheduleRequestTimeout(requestID: Int, generation: Int) {
         let workItem = DispatchWorkItem { [weak self] in
             guard let self,
                   self.processGeneration == generation,
-                  self.pendingRateLimitRequestIDs.contains(requestID) else { return }
+                  self.pendingRateLimitRequestIDs.contains(requestID) || self.pendingAccountRequestID == requestID else { return }
             self.resetConnection(.rateLimitTimedOut)
         }
-        rateLimitTimeoutWorkItems[requestID] = workItem
+        requestTimeoutWorkItems[requestID] = workItem
         queue.asyncAfter(deadline: .now() + 15, execute: workItem)
     }
 
@@ -298,21 +375,55 @@ final class CodexRateLimitClient {
 
     private func resetConnection(_ issue: ClientIssue) {
         guard !stopped else { return }
+        if !accountVerified { invalidateSnapshot() }
         reportError(issue)
         invalidateCurrentProcess(terminate: true)
         scheduleReconnect()
     }
 
     private func scheduleReconnect() {
-        guard !stopped else { return }
+        // One quick retry per refresh cycle; the regular timer keeps checking
+        // after logout or persistent failures without a rapid restart loop.
+        guard !stopped, !retriedThisRefresh else { return }
+        retriedThisRefresh = true
         reconnectWorkItem?.cancel()
+        let generation = processGeneration
         let workItem = DispatchWorkItem { [weak self] in
-            guard let self, !self.stopped else { return }
+            guard let self, !self.stopped, self.processGeneration == generation else { return }
             self.reconnectWorkItem = nil
             self.startProcessIfNeeded()
         }
         reconnectWorkItem = workItem
-        queue.asyncAfter(deadline: .now() + 5, execute: workItem)
+        queue.asyncAfter(deadline: .now() + reconnectDelay, execute: workItem)
+    }
+
+    private func handleRequestIssue(_ issue: ClientIssue) {
+        switch issue {
+        case .loginRequired:
+            accountVerified = false
+            resetConnection(issue)
+        case .apiKeyUnsupported:
+            invalidateSnapshot()
+            reportError(issue)
+        default:
+            if !accountVerified { invalidateSnapshot() }
+            reportError(issue)
+        }
+    }
+
+    private func invalidateSnapshot() {
+        accountIdentity = nil
+        accountVerified = false
+        DispatchQueue.main.async { [weak self] in
+            self?.onSnapshotInvalidated?()
+        }
+    }
+
+    private func cancelPendingRequests() {
+        for workItem in requestTimeoutWorkItems.values { workItem.cancel() }
+        requestTimeoutWorkItems.removeAll()
+        pendingAccountRequestID = nil
+        pendingRateLimitRequestIDs.removeAll()
     }
 
     private func invalidateCurrentProcess(terminate: Bool) {
@@ -321,12 +432,9 @@ final class CodexRateLimitClient {
 
         initializeTimeoutWorkItem?.cancel()
         initializeTimeoutWorkItem = nil
-        for workItem in rateLimitTimeoutWorkItems.values {
-            workItem.cancel()
-        }
-        rateLimitTimeoutWorkItems.removeAll()
-        refreshTimer?.cancel()
-        refreshTimer = nil
+        cancelPendingRequests()
+        reconnectWorkItem?.cancel()
+        reconnectWorkItem = nil
         outputPipe?.fileHandleForReading.readabilityHandler = nil
         errorPipe?.fileHandleForReading.readabilityHandler = nil
         inputPipe?.fileHandleForWriting.closeFile()
@@ -335,7 +443,7 @@ final class CodexRateLimitClient {
         outputPipe = nil
         errorPipe = nil
         initialized = false
-        pendingRateLimitRequestIDs.removeAll()
+        accountVerified = false
         outputBuffer.removeAll(keepingCapacity: true)
 
         if terminate, oldProcess?.isRunning == true {
@@ -380,7 +488,13 @@ final class CodexRateLimitClient {
         let lowercased = rawMessage.lowercased()
         if lowercased.contains("not logged in") ||
            lowercased.contains("unauthorized") ||
-           lowercased.contains("authentication") {
+           lowercased.contains("authentication") ||
+           lowercased.contains("401") ||
+           lowercased.contains("refresh token") ||
+           lowercased.contains("refresh_token") ||
+           lowercased.contains("access token") ||
+           lowercased.contains("logged out") ||
+           lowercased.contains("sign in again") {
             return .loginRequired
         }
         if lowercased.contains("api key") {

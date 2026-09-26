@@ -22,6 +22,7 @@ The menu bar shows Codex's 5-hour and weekly limits:
 - Switches between English and Simplified Chinese instantly, with English as the default
 - Shows reset times, plan information, and available reset credits
 - Refreshes automatically every 60 seconds and supports manual refresh
+- Follows desktop account changes on the next refresh; click **Refresh** to sync immediately
 - Retries automatically after connection failures or timeouts
 - Keeps the last successful values and shows `!` when they are stale
 - Does not read, copy, or save ChatGPT login tokens
@@ -72,6 +73,7 @@ macOS manages the app menu on the left and the status area on the right separate
 
 - `?%`: The app has not read data successfully yet. Confirm that ChatGPT/Codex is signed in, then open the popover and click **Refresh**.
 - `!`: The app is showing the last successful values while reconnecting.
+- After switching accounts in the desktop app: wait for the next automatic refresh (about 60 seconds), or click **Refresh**. Each refresh reconnects to Codex and checks the account before reading limits. Old values are cleared when the account changes, cannot be identified, or requires sign-in. Authentication failures get one quick retry, then resume on the regular refresh schedule.
 - Missing status item: macOS may temporarily hide status items when the menu bar is full.
 - API key sign-in: ChatGPT plan limits require ChatGPT sign-in; API key mode does not provide those plan-limit windows.
 

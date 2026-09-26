@@ -68,6 +68,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     private func configureClient() {
+        client.onSnapshotInvalidated = { [weak self] in
+            guard let self else { return }
+            self.currentSnapshot = nil
+            self.statusItemPresentation = .loading
+            self.renderStatusItem()
+            self.popoverController.clearSnapshot()
+        }
+
         client.onSnapshot = { [weak self] snapshot in
             guard let self else { return }
             self.currentSnapshot = snapshot
